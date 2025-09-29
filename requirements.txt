@@ -1,0 +1,4 @@
+pywin32==311
+pyperclip==1.8.2
+flask==2.3.3
+flask-cors==4.0.0
