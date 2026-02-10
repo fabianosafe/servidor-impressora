@@ -25,7 +25,8 @@ class EtiquetaServer:
         self.app = None
         
         # Configurações do servidor
-        self.host = "localhost"
+        # self.host = "localhost"
+        self.host = "0.0.0.0"
         self.port = 5000
         
         # Variável para armazenar o último comando ZPL recebido
