@@ -6,11 +6,7 @@ a = Analysis(
     ['etiqueta-server.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('README-etiquetas.md', '.'),
-        ('README-servidor.md', '.'),
-        ('README-executavel.md', '.'),
-    ],
+    datas=[],
     hiddenimports=[
         'win32print',
         'win32con',
@@ -45,7 +41,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='Servidor-Etiquetas',
+    name='etiqueta-server',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
