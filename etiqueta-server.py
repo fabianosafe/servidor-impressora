@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import threading
 import json
+import base64
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -32,9 +33,11 @@ class EtiquetaServer:
         # Variável para armazenar o último comando ZPL recebido
         self.ultimo_comando_zpl = ""
         
-        # Variável para armazenar a impressora selecionada
+        # Impressora de ETIQUETA (ZPL) — papel "etiqueta"
         self.impressora_selecionada = ""
-        
+        # Impressora de CUPOM (recibo/ticket ESC/POS) — papel "cupom"
+        self.impressora_cupom = ""
+
         # Variável para controlar impressão automática
         self.impressao_automatica = False
         
@@ -144,18 +147,28 @@ class EtiquetaServer:
         self.printer_combo.bind('<<ComboboxSelected>>', self.on_printer_change)
         
         # Botão para atualizar lista de impressoras
-        ttk.Button(printer_frame, text="🔄", width=3, 
+        ttk.Button(printer_frame, text="🔄", width=3,
                   command=self.atualizar_impressoras).pack(side=tk.LEFT, padx=(5, 0))
-        
+
+        # Impressora de CUPOM (recibo/ticket)
+        ttk.Label(config_frame, text="Impressora de Cupom:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        cupom_frame = ttk.Frame(config_frame)
+        cupom_frame.grid(row=3, column=1, sticky=(tk.W, tk.E), pady=2, padx=(10, 0))
+        self.printer_cupom_var = tk.StringVar()
+        self.printer_cupom_combo = ttk.Combobox(cupom_frame, textvariable=self.printer_cupom_var,
+                                                 state="readonly", width=30)
+        self.printer_cupom_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.printer_cupom_combo.bind('<<ComboboxSelected>>', self.on_printer_cupom_change)
+
         # Switch para impressão automática
-        ttk.Label(config_frame, text="Impressão Automática:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Label(config_frame, text="Impressão Automática:").grid(row=4, column=0, sticky=tk.W, pady=2)
         self.impressao_auto_var = tk.BooleanVar(value=False)
-        self.impressao_auto_check = ttk.Checkbutton(config_frame, 
+        self.impressao_auto_check = ttk.Checkbutton(config_frame,
                                                    text="Imprimir automaticamente ao receber etiqueta",
                                                    variable=self.impressao_auto_var,
                                                    command=self.on_impressao_auto_change)
-        self.impressao_auto_check.grid(row=3, column=1, sticky=tk.W, pady=2, padx=(10, 0))
-        
+        self.impressao_auto_check.grid(row=4, column=1, sticky=tk.W, pady=2, padx=(10, 0))
+
         # Carregar impressoras na inicialização
         self.atualizar_impressoras()
     
@@ -168,28 +181,41 @@ class EtiquetaServer:
             
             if impressoras:
                 self.printer_combo['values'] = impressoras
+                self.printer_cupom_combo['values'] = impressoras
                 if not self.printer_var.get() or self.printer_var.get() not in impressoras:
                     self.printer_var.set(impressoras[0])
                     self.impressora_selecionada = impressoras[0]
-                
+                if not self.printer_cupom_var.get() or self.printer_cupom_var.get() not in impressoras:
+                    self.printer_cupom_var.set(impressoras[0])
+                    self.impressora_cupom = impressoras[0]
+
                 self.adicionar_log(f"✅ {len(impressoras)} impressora(s) encontrada(s)")
             else:
                 self.printer_combo['values'] = ["Nenhuma impressora encontrada"]
+                self.printer_cupom_combo['values'] = ["Nenhuma impressora encontrada"]
                 self.printer_var.set("Nenhuma impressora encontrada")
+                self.printer_cupom_var.set("Nenhuma impressora encontrada")
                 self.impressora_selecionada = ""
+                self.impressora_cupom = ""
                 self.adicionar_log("⚠️ Nenhuma impressora encontrada no sistema")
-                
+
         except Exception as e:
             self.printer_combo['values'] = ["Erro ao carregar impressoras"]
             self.printer_var.set("Erro ao carregar impressoras")
             self.impressora_selecionada = ""
             self.adicionar_log(f"❌ Erro ao carregar impressoras: {str(e)}")
-    
+
     def on_printer_change(self, event=None):
-        """Callback quando a impressora é alterada"""
+        """Callback quando a impressora de etiqueta é alterada"""
         self.impressora_selecionada = self.printer_var.get()
         if self.impressora_selecionada and self.impressora_selecionada != "Nenhuma impressora encontrada":
-            self.adicionar_log(f"🖨️ Impressora selecionada: {self.impressora_selecionada}")
+            self.adicionar_log(f"🖨️ Impressora de etiqueta: {self.impressora_selecionada}")
+
+    def on_printer_cupom_change(self, event=None):
+        """Callback quando a impressora de cupom é alterada"""
+        self.impressora_cupom = self.printer_cupom_var.get()
+        if self.impressora_cupom and self.impressora_cupom != "Nenhuma impressora encontrada":
+            self.adicionar_log(f"🧾 Impressora de cupom: {self.impressora_cupom}")
     
     def on_impressao_auto_change(self):
         """Callback quando o switch de impressão automática é alterado"""
@@ -344,6 +370,31 @@ class EtiquetaServer:
                 self.adicionar_log(f"ERRO: {error_msg}")
                 return jsonify({"error": error_msg}), 500
         
+        @self.app.route('/imprimir-cupom', methods=['POST'])
+        def imprimir_cupom():
+            """Relay RAW para a impressora de CUPOM (recibo/ticket ESC/POS).
+            Payload JSON: { tipo: 'cupom', dados_base64: '<bytes ESC/POS em base64>' }.
+            O servidor é agnóstico ao conteúdo — a largura/layout vêm prontos do envio."""
+            try:
+                data = request.get_json(silent=True) or {}
+                dados_b64 = data.get('dados_base64')
+                if not dados_b64:
+                    return jsonify({"error": "Campo 'dados_base64' ausente"}), 400
+                try:
+                    dados_bytes = base64.b64decode(dados_b64)
+                except Exception:
+                    return jsonify({"error": "dados_base64 inválido"}), 400
+
+                # Roteia pelo papel 'cupom'; se não configurada, cai na de etiqueta
+                impressora = self.impressora_cupom or self.impressora_selecionada
+                self.imprimir_raw(dados_bytes, impressora, "Cupom")
+                self.adicionar_log(f"🧾 Cupom impresso na impressora: {impressora} ({len(dados_bytes)} bytes)")
+                return jsonify({"status": "Cupom enviado para impressão", "impressora": impressora})
+            except Exception as e:
+                error_msg = f"Erro ao imprimir cupom: {str(e)}"
+                self.adicionar_log(f"❌ {error_msg}")
+                return jsonify({"error": error_msg}), 500
+
         @self.app.route('/test', methods=['GET'])
         def test():
             return jsonify({
@@ -389,12 +440,13 @@ class EtiquetaServer:
             messagebox.showerror("Erro de Impressão", error_msg)
             self.adicionar_log(f"❌ {error_msg}")
     
-    def imprimir_zpl_automatico(self, comando_zpl):
-        """Envia comando ZPL específico para a impressora (usado para impressão automática)"""
-        # Verificar se há impressora selecionada
-        if not self.impressora_selecionada or self.impressora_selecionada == "Nenhuma impressora encontrada":
+    def imprimir_raw(self, dados_bytes, impressora, nome_doc):
+        """Relay RAW agnóstico ao conteúdo: envia bytes direto ao spooler da impressora.
+        Usado tanto para ZPL (etiqueta) quanto ESC/POS (cupom) — o servidor não
+        interpreta o conteúdo, só roteia por papel/impressora."""
+        if not impressora or impressora == "Nenhuma impressora encontrada":
             raise Exception("Nenhuma impressora selecionada. Selecione uma impressora nas configurações.")
-        
+
         # Verificar se a impressora ainda existe
         impressoras_disponiveis = []
         try:
@@ -402,24 +454,24 @@ class EtiquetaServer:
                 impressoras_disponiveis.append(printer[2])
         except:
             pass
-        
-        if self.impressora_selecionada not in impressoras_disponiveis:
-            raise Exception(f"Impressora '{self.impressora_selecionada}' não está mais disponível. Atualize a lista de impressoras.")
-        
-        # Abrir a impressora
-        handle = win32print.OpenPrinter(self.impressora_selecionada)
+
+        if impressora not in impressoras_disponiveis:
+            raise Exception(f"Impressora '{impressora}' não está mais disponível. Atualize a lista de impressoras.")
+
+        handle = win32print.OpenPrinter(impressora)
         try:
-            # Iniciar um trabalho de impressão RAW
-            hJob = win32print.StartDocPrinter(handle, 1, ("Etiqueta ZPL", None, "RAW"))
+            win32print.StartDocPrinter(handle, 1, (nome_doc, None, "RAW"))
             win32print.StartPagePrinter(handle)
-            win32print.WritePrinter(handle, comando_zpl.encode("ascii"))
+            win32print.WritePrinter(handle, dados_bytes)
             win32print.EndPagePrinter(handle)
             win32print.EndDocPrinter(handle)
-            
-            self.adicionar_log(f"🖨️ Etiqueta impressa automaticamente na impressora: {self.impressora_selecionada}")
-            
         finally:
             win32print.ClosePrinter(handle)
+
+    def imprimir_zpl_automatico(self, comando_zpl):
+        """Envia comando ZPL para a impressora de etiqueta (papel 'etiqueta')."""
+        self.imprimir_raw(comando_zpl.encode("ascii"), self.impressora_selecionada, "Etiqueta ZPL")
+        self.adicionar_log(f"🖨️ Etiqueta impressa na impressora: {self.impressora_selecionada}")
     
     def copiar_zpl(self):
         """Copia o último comando ZPL para a área de transferência"""
