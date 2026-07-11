@@ -14,7 +14,7 @@ import win32print
 import win32con
 import pyperclip
 
-class EtiquetaServer:
+class ServidorImpressora:
     def __init__(self, root):
         self.root = root
         self.root.title("Servidor de Impressão")
@@ -339,7 +339,7 @@ class EtiquetaServer:
         @self.app.route('/', methods=['GET'])
         def home():
             return jsonify({
-                "status": "Servidor de Impressao de Etiquetas funcionando!",
+                "status": "Servidor de Impressao funcionando!",
                 "timestamp": datetime.now().isoformat()
             })
         
@@ -529,7 +529,7 @@ class EtiquetaServer:
 
 def main():
     root = tk.Tk()
-    app = EtiquetaServer(root)
+    app = ServidorImpressora(root)
     root.mainloop()
 
 if __name__ == "__main__":

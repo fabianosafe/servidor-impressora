@@ -1,6 +1,6 @@
-# Servidor de Impressão de Etiquetas — FAGUS
+# Servidor de Impressão — FAGUS
 
-Aplicação desktop Windows que recebe comandos ZPL via HTTP e imprime em impressoras térmicas locais (Zebra e compatíveis). Usado pelo ERP FAGUS para imprimir etiquetas de produto na impressora da rede local do cliente.
+Aplicação desktop Windows que recebe comandos de impressão via HTTP e envia RAW para impressoras térmicas locais — etiquetas ZPL (Zebra e compatíveis) e cupons ESC/POS. Usado pelo ERP FAGUS para imprimir na rede local do cliente.
 
 ## Download
 
@@ -14,7 +14,7 @@ Sem instalação. Executar direto.
 
 - Servidor Flask local escutando em `0.0.0.0:5000` por padrão.
 - Interface Tkinter para selecionar impressora, ativar/desativar servidor, ver log.
-- **Duas impressoras por papel**: "Impressora" (etiqueta ZPL) e "Impressora de Cupom" (recibo/ticket ESC/POS). O servidor é um **relay RAW agnóstico ao conteúdo** — a largura/layout vêm prontos do envio (Fagus); ele só roteia por papel.
+- **Duas impressoras por papel**: "Impressora Etiquetas" (etiqueta ZPL) e "Impressora de Cupom" (recibo/ticket ESC/POS). O servidor é um **relay RAW agnóstico ao conteúdo** — a largura/layout vêm prontos do envio (Fagus); ele só roteia por papel.
 - Endpoints:
   - `GET /` — health check
   - `GET /test` — teste conexão
@@ -62,4 +62,4 @@ Action builda e cria a Release. URL `latest/download/servidor-impressora.exe` se
 
 ## Integração com FAGUS
 
-Fagus envia ZPL via `fetch` pra `http://<ip-local>:5000/receive`. Endereço configurável no modal de impressão de etiqueta. Botão de download no modal aponta direto pra Release `latest`.
+Fagus envia ZPL pra `/receive` (etiquetas) e ESC/POS em base64 pra `/imprimir-cupom` (cupom do PDV), sempre em `http://<ip-local>:5000`. Endereço configurável no modal de impressão de etiqueta e no badge de impressora do PDV. Botões de download apontam direto pra Release `latest` (`servidor-impressora.exe`).
