@@ -1,3 +1,5 @@
+# ./.venv/bin/python servidor-impressora.py
+
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import threading
@@ -6,6 +8,7 @@ import base64
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from werkzeug.serving import make_server
 import webbrowser
 import win32print
 import win32con
@@ -14,7 +17,7 @@ import pyperclip
 class EtiquetaServer:
     def __init__(self, root):
         self.root = root
-        self.root.title("Servidor de Impressão de Etiquetas")
+        self.root.title("Servidor de Impressão")
         
         # Configurar tamanho mínimo e permitir redimensionamento automático
         self.root.minsize(400, 400)  # Tamanho mínimo
@@ -24,6 +27,7 @@ class EtiquetaServer:
         self.server_running = False
         self.server_thread = None
         self.app = None
+        self.httpd = None  # referência Werkzeug — necessária para shutdown real
         
         # Configurações do servidor
         # self.host = "localhost"
@@ -133,7 +137,7 @@ class EtiquetaServer:
         host_entry.grid(row=1, column=1, sticky=tk.W, pady=2, padx=(10, 0))
         
         # Impressora
-        ttk.Label(config_frame, text="Impressora:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Label(config_frame, text="Impressora Etiquetas:").grid(row=2, column=0, sticky=tk.W, pady=2)
         
         # Frame para impressora
         printer_frame = ttk.Frame(config_frame)
@@ -271,6 +275,9 @@ class EtiquetaServer:
             
             # Configurar rotas
             self.configurar_rotas()
+
+            # make_server (não app.run) — guarda referência para poder parar de verdade
+            self.httpd = make_server(self.host, self.port, self.app, threaded=True)
             
             # Iniciar servidor em thread separada
             self.server_thread = threading.Thread(target=self.executar_servidor, daemon=True)
@@ -292,12 +299,20 @@ class EtiquetaServer:
             self.adicionar_log("⚙️ Impressão automática ativada por padrão")
             
         except Exception as e:
+            self.httpd = None
             messagebox.showerror("Erro", f"Erro ao iniciar servidor:\n{str(e)}")
             self.adicionar_log(f"ERRO: {str(e)}")
     
     def parar_servidor(self):
-        """Para o servidor"""
+        """Para o servidor HTTP de verdade (libera a porta)."""
         try:
+            httpd = self.httpd
+            self.httpd = None
+            if httpd is not None:
+                # Pode ser chamado de outra thread enquanto serve_forever roda
+                httpd.shutdown()
+                httpd.server_close()
+
             self.server_running = False
             self.status_var.set("Desativado")
             self.status_label.config(foreground="red")
@@ -310,9 +325,11 @@ class EtiquetaServer:
             messagebox.showerror("Erro", f"Erro ao parar servidor:\n{str(e)}")
     
     def executar_servidor(self):
-        """Executa o servidor Flask"""
+        """Executa o servidor Flask até shutdown()."""
         try:
-            self.app.run(host=self.host, port=self.port, debug=False, use_reloader=False)
+            if self.httpd is None:
+                return
+            self.httpd.serve_forever()
         except Exception as e:
             self.adicionar_log(f"ERRO NO SERVIDOR: {str(e)}")
     

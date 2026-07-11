@@ -3,7 +3,7 @@
 block_cipher = None
 
 a = Analysis(
-    ['etiqueta-server.py'],
+    ['servidor-impressora.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -41,7 +41,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='etiqueta-server',
+    name='servidor-impressora',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

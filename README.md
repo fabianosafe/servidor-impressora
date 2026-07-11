@@ -6,7 +6,7 @@ Aplicação desktop Windows que recebe comandos ZPL via HTTP e imprime em impres
 
 Versão mais recente (executável Windows):
 
-**[Baixar etiqueta-server.exe](https://github.com/fabianosafe/servidor-impressora/releases/latest/download/etiqueta-server.exe)**
+**[Baixar servidor-impressora.exe](https://github.com/fabianosafe/servidor-impressora/releases/latest/download/servidor-impressora.exe)**
 
 Sem instalação. Executar direto.
 
@@ -36,7 +36,7 @@ Pré-requisitos: Python 3.11 + Windows.
 
 ```bash
 pip install -r requirements.txt
-python etiqueta-server.py
+python servidor-impressora.py
 ```
 
 ## Build do executável
@@ -45,8 +45,8 @@ Local:
 
 ```bash
 pip install -r requirements.txt pyinstaller
-pyinstaller servidor-etiquetas.spec
-# saída: dist/etiqueta-server.exe
+pyinstaller servidor-impressora.spec
+# saída: dist/servidor-impressora.exe
 ```
 
 Automático: workflow `.github/workflows/release.yml` roda em `windows-latest` e publica o `.exe` como GitHub Release.
@@ -58,7 +58,7 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-Action builda e cria a Release. URL `latest/download/etiqueta-server.exe` sempre aponta pra última.
+Action builda e cria a Release. URL `latest/download/servidor-impressora.exe` sempre aponta pra última.
 
 ## Integração com FAGUS
 
