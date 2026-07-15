@@ -39,6 +39,24 @@ pip install -r requirements.txt
 python servidor-impressora.py
 ```
 
+### Linux (só desenvolvimento)
+
+Produção é Windows (`pywin32`). No Linux, use o shim em `dev-linux/win32shim/` — simula impressoras virtuais sem alterar o código principal.
+
+```bash
+# venv sem pywin32 (Flask + flask-cors + pyperclip; Tkinter do sistema)
+python3 -m venv .venv
+./.venv/bin/pip install Flask flask-cors pyperclip
+
+PYTHONPATH=dev-linux/win32shim ./.venv/bin/python servidor-impressora.py
+```
+
+Impressoras virtuais no combo:
+- **Emulador ESC/POS (localhost:9100)** — envia RAW via TCP (ex.: [escpos-netprinter](https://github.com/gilbertfl/escpos-netprinter) em `:8080`)
+- **Arquivo (/tmp/impressora-raw)** — grava cada job em `.bin`
+
+O shim **não** entra no PyInstaller / release Windows.
+
 ## Build do executável
 
 Local:

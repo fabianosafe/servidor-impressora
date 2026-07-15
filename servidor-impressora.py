@@ -1,5 +1,8 @@
 # ./.venv/bin/python servidor-impressora.py
 
+## no Linux
+# PYTHONPATH=dev-linux/win32shim ./.venv/bin/python servidor-impressora.py
+
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import threading
