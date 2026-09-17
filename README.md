@@ -10,11 +10,15 @@ Versão mais recente (Windows, .zip):
 
 Sem instalação. Extrair o .zip e executar o `servidor-impressora.exe` de dentro da pasta extraída (não mover o `.exe` sozinho — ele depende dos arquivos da pasta `_internal` ao lado).
 
-Distribuído como pasta (onedir), não `.exe` único: builds onefile se autoextraem pra uma pasta temporária a cada execução, um padrão que heurística de antivírus costuma marcar como comportamento de dropper de malware — onedir evita isso.
+**Extrair direto num local fixo fora de Downloads/Desktop** — ex.: `C:\Servidor de Impressão`. Ao extrair pelo Windows ("Extrair Tudo"), trocar o campo de destino direto pra essa pasta, sem passar por Downloads antes. Dois motivos:
+1. Downloads é uma das pastas mais vigiadas por heurística de antivírus ("muitos executáveis novos aparecendo de uma vez") — extrair ali (mesmo que só de passagem, movendo depois) já é o suficiente pra alguns antivírus barrarem arquivos da pasta `_internal` silenciosamente.
+2. O auto-início com o Windows (opção "Iniciar com o Windows") registra o caminho de onde o `.exe` está rodando **no momento em que a opção é marcada** — sem local fixo, mover o app depois quebra o auto-início silenciosamente.
+
+Distribuído como pasta (onedir), não `.exe` único: builds onefile se autoextraem pra uma pasta temporária a cada execução, um padrão que heurística de antivírus costuma marcar como comportamento de dropper de malware — onedir evita isso. Pelo mesmo motivo, a versão atual **não** se autocopia pra outro lugar ao marcar "Iniciar com o Windows" (versões anteriores faziam isso e eram bloqueadas pelo Kaspersky por comportamento de persistência).
 
 ## Como funciona
 
-- Servidor Flask local escutando em `0.0.0.0:5000` por padrão.
+- Servidor Flask local escutando em `localhost:5000` por padrão (host configurável na interface).
 - Interface Tkinter para selecionar impressora, ativar/desativar servidor, ver log.
 - **Duas impressoras por papel**: "Impressora Etiquetas" (etiqueta ZPL) e "Impressora de Cupom" (recibo/ticket ESC/POS). O servidor é um **relay RAW agnóstico ao conteúdo** — a largura/layout vêm prontos do envio (Fagus); ele só roteia por papel.
 - Endpoints:
