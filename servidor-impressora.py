@@ -10,7 +10,6 @@ import json
 import os
 import sys
 import winreg
-import shutil
 import base64
 from datetime import datetime
 from flask import Flask, request, jsonify
@@ -37,33 +36,23 @@ NENHUMA_IMPRESSORA = "(Nenhuma)"
 REGISTRY_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 REGISTRY_VALUE_NAME = "ServidorImpressoraFagus"
 
-# Cópia estável do executável — o registro do Windows aponta pra cá, não pra onde o
-# usuário baixou originalmente (Downloads, Desktop etc.), que ele pode apagar/mover
-# depois achando que não precisa mais do arquivo.
-INSTALL_DIR = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser('~')), 'ServidorImpressora')
-INSTALL_EXE_PATH = os.path.join(INSTALL_DIR, 'servidor-impressora.exe')
-
-
-def garantir_copia_instalada():
-    """Copia o executável em execução para uma pasta fixa (%LOCALAPPDATA%), se ainda não
-    estiver rodando de lá. Retorna o caminho a ser registrado no auto-início do Windows —
-    assim o download original pode ser apagado sem quebrar o auto-início."""
-    origem = os.path.abspath(sys.executable)
-    if os.path.normcase(origem) == os.path.normcase(os.path.abspath(INSTALL_EXE_PATH)):
-        return origem
-    os.makedirs(INSTALL_DIR, exist_ok=True)
-    shutil.copy2(origem, INSTALL_EXE_PATH)
-    return INSTALL_EXE_PATH
-
-
 def registrar_auto_inicio_windows():
-    """Registra o executável para abrir sozinho no login do Windows. Só faz sentido na
+    """Registra o executável para abrir sozinho no login do Windows, apontando pro
+    caminho ONDE ELE JÁ ESTÁ rodando (não se copia pra outro lugar). Só faz sentido na
     versão compilada (sys.frozen) — no modo script de desenvolvimento não há um .exe
-    fixo para apontar."""
+    fixo para apontar.
+
+    Deliberadamente NÃO copia o executável pra uma pasta fixa antes de registrar: a
+    combinação "se copia + grava autorun" é a assinatura comportamental clássica de
+    dropper/persistência de malware — testado na prática, o Kaspersky mata o processo
+    na hora nessa combinação, mesmo com o arquivo em pasta excluída do scan (é detecção
+    de comportamento, não de arquivo). Registrar só o caminho atual evita esse gatilho.
+    Custo: se o usuário apagar/mover o arquivo depois, o auto-início para de funcionar
+    silenciosamente — bem menos grave que o antivírus bloquear o app de cara."""
     if not getattr(sys, 'frozen', False):
         return False
     try:
-        caminho_exe = garantir_copia_instalada()
+        caminho_exe = os.path.abspath(sys.executable)
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY_RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, REGISTRY_VALUE_NAME, 0, winreg.REG_SZ, f'"{caminho_exe}"')
         return True
@@ -110,8 +99,7 @@ class ServidorImpressora:
         self.httpd = None  # referência Werkzeug — necessária para shutdown real
         
         # Configurações do servidor
-        # self.host = "localhost"
-        self.host = "0.0.0.0"
+        self.host = "localhost"
         self.port = 5000
         
         # Variável para armazenar o último comando ZPL recebido
@@ -369,8 +357,7 @@ class ServidorImpressora:
         if self.auto_iniciar:
             if registrar_auto_inicio_windows():
                 self.adicionar_log("✅ Registrado para abrir com o Windows")
-                self.adicionar_log(f"📦 Cópia estável salva em: {INSTALL_EXE_PATH}")
-                self.adicionar_log("   (o arquivo baixado originalmente já pode ser apagado)")
+                self.adicionar_log(f"⚠️ Não mova nem apague esta pasta: {os.path.dirname(os.path.abspath(sys.executable))}")
             elif getattr(sys, 'frozen', False):
                 self.adicionar_log("⚠️ Não foi possível registrar no Windows (verifique permissões)")
         else:
