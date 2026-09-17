@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import threading
 import json
+import os
 import base64
 from datetime import datetime
 from flask import Flask, request, jsonify
@@ -16,6 +17,14 @@ import webbrowser
 import win32print
 import win32con
 import pyperclip
+
+CONFIG_DIR = os.path.join(os.getenv('APPDATA', os.path.expanduser('~')), 'ServidorImpressora')
+CONFIG_PATH = os.path.join(CONFIG_DIR, 'config.json')
+
+# Sentinela exibida nos combobox de impressora — deixa a seleção em branco de propósito
+# (ex.: usuário selecionou a impressora errada e quer voltar a "nenhuma" em vez de outra
+# impressora real por engano).
+NENHUMA_IMPRESSORA = "(Nenhuma)"
 
 class ServidorImpressora:
     def __init__(self, root):
@@ -47,9 +56,21 @@ class ServidorImpressora:
 
         # Variável para controlar impressão automática
         self.impressao_automatica = False
-        
+
+        # Iniciar servidor automaticamente ao abrir o app (config persistida)
+        self.auto_iniciar = False
+        self.config_ja_existia = False
+
+        self.carregar_config()
+
         self.criar_interface()
-        
+
+        if self.config_ja_existia:
+            self.adicionar_log("📁 Configuração carregada de execução anterior")
+
+        if self.auto_iniciar:
+            self.iniciar_servidor()
+
     def criar_interface(self):
         # Frame principal
         main_frame = ttk.Frame(self.root, padding="10")
@@ -147,8 +168,12 @@ class ServidorImpressora:
         printer_frame.grid(row=2, column=1, sticky=(tk.W, tk.E), pady=2, padx=(10, 0))
         
         # Combobox para selecionar impressora
-        self.printer_var = tk.StringVar()
-        self.printer_combo = ttk.Combobox(printer_frame, textvariable=self.printer_var, 
+        # Se veio de config salva com seleção em branco de propósito, mostra a sentinela
+        # "(Nenhuma)" em vez de string vazia — senão atualizar_impressoras() forçaria
+        # de volta pra primeira impressora da lista.
+        valor_inicial_etiqueta = NENHUMA_IMPRESSORA if (self.config_ja_existia and not self.impressora_selecionada) else self.impressora_selecionada
+        self.printer_var = tk.StringVar(value=valor_inicial_etiqueta)
+        self.printer_combo = ttk.Combobox(printer_frame, textvariable=self.printer_var,
                                          state="readonly", width=30)
         self.printer_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.printer_combo.bind('<<ComboboxSelected>>', self.on_printer_change)
@@ -161,7 +186,8 @@ class ServidorImpressora:
         ttk.Label(config_frame, text="Impressora de Cupom:").grid(row=3, column=0, sticky=tk.W, pady=2)
         cupom_frame = ttk.Frame(config_frame)
         cupom_frame.grid(row=3, column=1, sticky=(tk.W, tk.E), pady=2, padx=(10, 0))
-        self.printer_cupom_var = tk.StringVar()
+        valor_inicial_cupom = NENHUMA_IMPRESSORA if (self.config_ja_existia and not self.impressora_cupom) else self.impressora_cupom
+        self.printer_cupom_var = tk.StringVar(value=valor_inicial_cupom)
         self.printer_cupom_combo = ttk.Combobox(cupom_frame, textvariable=self.printer_cupom_var,
                                                  state="readonly", width=30)
         self.printer_cupom_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -169,12 +195,21 @@ class ServidorImpressora:
 
         # Switch para impressão automática
         ttk.Label(config_frame, text="Impressão Automática:").grid(row=4, column=0, sticky=tk.W, pady=2)
-        self.impressao_auto_var = tk.BooleanVar(value=False)
+        self.impressao_auto_var = tk.BooleanVar(value=self.impressao_automatica)
         self.impressao_auto_check = ttk.Checkbutton(config_frame,
                                                    text="Imprimir automaticamente ao receber etiqueta",
                                                    variable=self.impressao_auto_var,
                                                    command=self.on_impressao_auto_change)
         self.impressao_auto_check.grid(row=4, column=1, sticky=tk.W, pady=2, padx=(10, 0))
+
+        # Switch para iniciar o servidor sozinho ao abrir o app
+        ttk.Label(config_frame, text="Iniciar ao Abrir:").grid(row=5, column=0, sticky=tk.W, pady=2)
+        self.auto_iniciar_var = tk.BooleanVar(value=self.auto_iniciar)
+        self.auto_iniciar_check = ttk.Checkbutton(config_frame,
+                                                   text="Iniciar servidor automaticamente ao abrir",
+                                                   variable=self.auto_iniciar_var,
+                                                   command=self.on_auto_iniciar_change)
+        self.auto_iniciar_check.grid(row=5, column=1, sticky=tk.W, pady=2, padx=(10, 0))
 
         # Carregar impressoras na inicialização
         self.atualizar_impressoras()
@@ -187,14 +222,23 @@ class ServidorImpressora:
                 impressoras.append(printer[2])
             
             if impressoras:
-                self.printer_combo['values'] = impressoras
-                self.printer_cupom_combo['values'] = impressoras
-                if not self.printer_var.get() or self.printer_var.get() not in impressoras:
+                # "(Nenhuma)" primeiro na lista — permite deixar a seleção em branco de
+                # propósito (ex.: escolheu a impressora errada e quer voltar a nenhuma).
+                valores_combo = [NENHUMA_IMPRESSORA] + impressoras
+                self.printer_combo['values'] = valores_combo
+                self.printer_cupom_combo['values'] = valores_combo
+
+                if self.printer_var.get() not in valores_combo:
                     self.printer_var.set(impressoras[0])
                     self.impressora_selecionada = impressoras[0]
-                if not self.printer_cupom_var.get() or self.printer_cupom_var.get() not in impressoras:
+                elif self.printer_var.get() == NENHUMA_IMPRESSORA:
+                    self.impressora_selecionada = ""
+
+                if self.printer_cupom_var.get() not in valores_combo:
                     self.printer_cupom_var.set(impressoras[0])
                     self.impressora_cupom = impressoras[0]
+                elif self.printer_cupom_var.get() == NENHUMA_IMPRESSORA:
+                    self.impressora_cupom = ""
 
                 self.adicionar_log(f"✅ {len(impressoras)} impressora(s) encontrada(s)")
             else:
@@ -214,22 +258,70 @@ class ServidorImpressora:
 
     def on_printer_change(self, event=None):
         """Callback quando a impressora de etiqueta é alterada"""
-        self.impressora_selecionada = self.printer_var.get()
+        valor = self.printer_var.get()
+        self.impressora_selecionada = "" if valor == NENHUMA_IMPRESSORA else valor
         if self.impressora_selecionada and self.impressora_selecionada != "Nenhuma impressora encontrada":
             self.adicionar_log(f"🖨️ Impressora de etiqueta: {self.impressora_selecionada}")
+        elif valor == NENHUMA_IMPRESSORA:
+            self.adicionar_log("🖨️ Impressora de etiqueta: nenhuma selecionada")
+        self.salvar_config()
 
     def on_printer_cupom_change(self, event=None):
         """Callback quando a impressora de cupom é alterada"""
-        self.impressora_cupom = self.printer_cupom_var.get()
+        valor = self.printer_cupom_var.get()
+        self.impressora_cupom = "" if valor == NENHUMA_IMPRESSORA else valor
         if self.impressora_cupom and self.impressora_cupom != "Nenhuma impressora encontrada":
             self.adicionar_log(f"🧾 Impressora de cupom: {self.impressora_cupom}")
-    
+        elif valor == NENHUMA_IMPRESSORA:
+            self.adicionar_log("🧾 Impressora de cupom: nenhuma selecionada")
+        self.salvar_config()
+
     def on_impressao_auto_change(self):
         """Callback quando o switch de impressão automática é alterado"""
         self.impressao_automatica = self.impressao_auto_var.get()
         status = "ativada" if self.impressao_automatica else "desativada"
         self.adicionar_log(f"⚙️ Impressão automática {status}")
-        
+        self.salvar_config()
+
+    def on_auto_iniciar_change(self):
+        """Callback quando o switch de auto-início do servidor é alterado"""
+        self.auto_iniciar = self.auto_iniciar_var.get()
+        status = "ativado" if self.auto_iniciar else "desativado"
+        self.adicionar_log(f"⚙️ Iniciar servidor automaticamente ao abrir: {status}")
+        self.salvar_config()
+
+    def carregar_config(self):
+        """Carrega configuração persistida (se existir) — mantém os padrões se ausente/corrompida."""
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            self.host = config.get('host', self.host)
+            self.port = config.get('port', self.port)
+            self.impressora_selecionada = config.get('impressora_selecionada', self.impressora_selecionada)
+            self.impressora_cupom = config.get('impressora_cupom', self.impressora_cupom)
+            self.impressao_automatica = config.get('impressao_automatica', self.impressao_automatica)
+            self.auto_iniciar = config.get('auto_iniciar', self.auto_iniciar)
+            self.config_ja_existia = True
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+
+    def salvar_config(self):
+        """Persiste a configuração atual em disco (%APPDATA%\\ServidorImpressora\\config.json)."""
+        try:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            config = {
+                'host': self.host,
+                'port': self.port,
+                'impressora_selecionada': self.impressora_selecionada,
+                'impressora_cupom': self.impressora_cupom,
+                'impressao_automatica': self.impressao_automatica,
+                'auto_iniciar': self.auto_iniciar,
+            }
+            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+        except OSError as e:
+            self.adicionar_log(f"⚠️ Erro ao salvar configuração: {str(e)}")
+
     def processar_comando_zpl(self, dados):
         """Processa comando ZPL recebido do frontend"""
         try:
@@ -297,9 +389,10 @@ class ServidorImpressora:
             # Ativar impressão automática por padrão quando servidor é iniciado
             self.impressao_auto_var.set(True)
             self.impressao_automatica = True
-            
+
             self.adicionar_log("Servidor iniciado com sucesso!")
             self.adicionar_log("⚙️ Impressão automática ativada por padrão")
+            self.salvar_config()
             
         except Exception as e:
             self.httpd = None
