@@ -21,6 +21,12 @@ a = Analysis(
         'json',
         'datetime',
         'webbrowser',
+        'winreg',
+        'pystray',
+        'pystray._win32',
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageDraw',
     ],
     hookspath=[],
     hooksconfig={},
@@ -34,20 +40,21 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# onedir (não onefile): o .exe fica numa pasta ao lado dos DLLs/dados, sem se
+# autoextrair pra uma pasta temporária a cada execução — esse padrão de
+# "autoextração" é um gatilho clássico de heurística de antivírus (parece
+# comportamento de dropper de malware). UPX também desligado pelo mesmo motivo
+# (binário compactado/ofuscado é outro gatilho comum).
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='servidor-impressora',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,  # Sem console (interface gráfica)
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -55,4 +62,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,  # Adicione um ícone aqui se desejar
-) 
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='servidor-impressora',
+)

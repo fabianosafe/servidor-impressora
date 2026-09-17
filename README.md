@@ -4,11 +4,13 @@ Aplicação desktop Windows que recebe comandos de impressão via HTTP e envia R
 
 ## Download
 
-Versão mais recente (executável Windows):
+Versão mais recente (Windows, .zip):
 
-**[Baixar servidor-impressora.exe](https://github.com/fabianosafe/servidor-impressora/releases/latest/download/servidor-impressora.exe)**
+**[Baixar servidor-impressora.zip](https://github.com/fabianosafe/servidor-impressora/releases/latest/download/servidor-impressora.zip)**
 
-Sem instalação. Executar direto.
+Sem instalação. Extrair o .zip e executar o `servidor-impressora.exe` de dentro da pasta extraída (não mover o `.exe` sozinho — ele depende dos arquivos da pasta `_internal` ao lado).
+
+Distribuído como pasta (onedir), não `.exe` único: builds onefile se autoextraem pra uma pasta temporária a cada execução, um padrão que heurística de antivírus costuma marcar como comportamento de dropper de malware — onedir evita isso.
 
 ## Como funciona
 
@@ -64,10 +66,10 @@ Local:
 ```bash
 pip install -r requirements.txt pyinstaller
 pyinstaller servidor-impressora.spec
-# saída: dist/servidor-impressora.exe
+# saída: dist/servidor-impressora/servidor-impressora.exe (+ dist/servidor-impressora/_internal/)
 ```
 
-Automático: workflow `.github/workflows/release.yml` roda em `windows-latest` e publica o `.exe` como GitHub Release.
+Automático: workflow `.github/workflows/release.yml` roda em `windows-latest`, zipa `dist/servidor-impressora/` e publica `servidor-impressora.zip` como GitHub Release.
 
 ## Publicar nova versão
 
@@ -76,8 +78,8 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-Action builda e cria a Release. URL `latest/download/servidor-impressora.exe` sempre aponta pra última.
+Action builda e cria a Release. URL `latest/download/servidor-impressora.zip` sempre aponta pra última.
 
 ## Integração com FAGUS
 
-Fagus envia ZPL pra `/receive` (etiquetas) e ESC/POS em base64 pra `/imprimir-cupom` (cupom do PDV), sempre em `http://<ip-local>:5000`. Endereço configurável no modal de impressão de etiqueta e no badge de impressora do PDV. Botões de download apontam direto pra Release `latest` (`servidor-impressora.exe`).
+Fagus envia ZPL pra `/receive` (etiquetas) e ESC/POS em base64 pra `/imprimir-cupom` (cupom do PDV), sempre em `http://<ip-local>:5000`. Endereço configurável no modal de impressão de etiqueta e no badge de impressora do PDV. Botões de download apontam direto pra Release `latest` (`servidor-impressora.zip`).

@@ -8,6 +8,9 @@ from tkinter import ttk, scrolledtext, messagebox
 import threading
 import json
 import os
+import sys
+import winreg
+import shutil
 import base64
 from datetime import datetime
 from flask import Flask, request, jsonify
@@ -17,6 +20,8 @@ import webbrowser
 import win32print
 import win32con
 import pyperclip
+import pystray
+from PIL import Image, ImageDraw
 
 CONFIG_DIR = os.path.join(os.getenv('APPDATA', os.path.expanduser('~')), 'ServidorImpressora')
 CONFIG_PATH = os.path.join(CONFIG_DIR, 'config.json')
@@ -25,6 +30,69 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, 'config.json')
 # (ex.: usuário selecionou a impressora errada e quer voltar a "nenhuma" em vez de outra
 # impressora real por engano).
 NENHUMA_IMPRESSORA = "(Nenhuma)"
+
+# Auto-início com o Windows: HKCU\...\Run é por usuário (não exige admin) e roda na
+# sessão interativa de quem logou — diferente de um serviço Windows (Session 0, sem
+# desktop, %APPDATA% de outro perfil), que não funciona com um app Tkinter como este.
+REGISTRY_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+REGISTRY_VALUE_NAME = "ServidorImpressoraFagus"
+
+# Cópia estável do executável — o registro do Windows aponta pra cá, não pra onde o
+# usuário baixou originalmente (Downloads, Desktop etc.), que ele pode apagar/mover
+# depois achando que não precisa mais do arquivo.
+INSTALL_DIR = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser('~')), 'ServidorImpressora')
+INSTALL_EXE_PATH = os.path.join(INSTALL_DIR, 'servidor-impressora.exe')
+
+
+def garantir_copia_instalada():
+    """Copia o executável em execução para uma pasta fixa (%LOCALAPPDATA%), se ainda não
+    estiver rodando de lá. Retorna o caminho a ser registrado no auto-início do Windows —
+    assim o download original pode ser apagado sem quebrar o auto-início."""
+    origem = os.path.abspath(sys.executable)
+    if os.path.normcase(origem) == os.path.normcase(os.path.abspath(INSTALL_EXE_PATH)):
+        return origem
+    os.makedirs(INSTALL_DIR, exist_ok=True)
+    shutil.copy2(origem, INSTALL_EXE_PATH)
+    return INSTALL_EXE_PATH
+
+
+def registrar_auto_inicio_windows():
+    """Registra o executável para abrir sozinho no login do Windows. Só faz sentido na
+    versão compilada (sys.frozen) — no modo script de desenvolvimento não há um .exe
+    fixo para apontar."""
+    if not getattr(sys, 'frozen', False):
+        return False
+    try:
+        caminho_exe = garantir_copia_instalada()
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY_RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, REGISTRY_VALUE_NAME, 0, winreg.REG_SZ, f'"{caminho_exe}"')
+        return True
+    except OSError:
+        return False
+
+
+def remover_auto_inicio_windows():
+    """Remove o registro de auto-início (idempotente — sem erro se já não existir)."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY_RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, REGISTRY_VALUE_NAME)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def criar_imagem_icone_bandeja():
+    """Gera um ícone simples (impressora estilizada) para a bandeja do sistema, sem
+    depender de um arquivo de imagem externo no pacote."""
+    tamanho = 64
+    img = Image.new('RGBA', (tamanho, tamanho), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([8, 22, 56, 44], fill=(37, 99, 235, 255))
+    draw.rectangle([16, 8, 48, 24], fill=(30, 64, 175, 255))
+    draw.rectangle([16, 40, 48, 58], fill=(255, 255, 255, 255))
+    return img
 
 class ServidorImpressora:
     def __init__(self, root):
@@ -60,16 +128,24 @@ class ServidorImpressora:
         # Iniciar servidor automaticamente ao abrir o app (config persistida)
         self.auto_iniciar = False
         self.config_ja_existia = False
+        self.tray_icon = None
 
         self.carregar_config()
 
         self.criar_interface()
+
+        try:
+            self.configurar_bandeja()
+            self.root.protocol("WM_DELETE_WINDOW", self.esconder_para_bandeja)
+        except Exception as e:
+            self.adicionar_log(f"⚠️ Bandeja do sistema indisponível: {str(e)}")
 
         if self.config_ja_existia:
             self.adicionar_log("📁 Configuração carregada de execução anterior")
 
         if self.auto_iniciar:
             self.iniciar_servidor()
+            self.esconder_para_bandeja()
 
     def criar_interface(self):
         # Frame principal
@@ -202,11 +278,11 @@ class ServidorImpressora:
                                                    command=self.on_impressao_auto_change)
         self.impressao_auto_check.grid(row=4, column=1, sticky=tk.W, pady=2, padx=(10, 0))
 
-        # Switch para iniciar o servidor sozinho ao abrir o app
-        ttk.Label(config_frame, text="Iniciar ao Abrir:").grid(row=5, column=0, sticky=tk.W, pady=2)
+        # Switch único: abre com o Windows, minimizado na bandeja, servidor já ligado
+        ttk.Label(config_frame, text="Iniciar com o Windows:").grid(row=5, column=0, sticky=tk.W, pady=2)
         self.auto_iniciar_var = tk.BooleanVar(value=self.auto_iniciar)
         self.auto_iniciar_check = ttk.Checkbutton(config_frame,
-                                                   text="Iniciar servidor automaticamente ao abrir",
+                                                   text="Abrir automaticamente com o Windows, minimizado na bandeja",
                                                    variable=self.auto_iniciar_var,
                                                    command=self.on_auto_iniciar_change)
         self.auto_iniciar_check.grid(row=5, column=1, sticky=tk.W, pady=2, padx=(10, 0))
@@ -284,10 +360,22 @@ class ServidorImpressora:
         self.salvar_config()
 
     def on_auto_iniciar_change(self):
-        """Callback quando o switch de auto-início do servidor é alterado"""
+        """Callback quando o switch de auto-início com o Windows é alterado — além de
+        persistir a preferência, registra/remove o app do login do Windows (HKCU\\...\\Run)."""
         self.auto_iniciar = self.auto_iniciar_var.get()
         status = "ativado" if self.auto_iniciar else "desativado"
-        self.adicionar_log(f"⚙️ Iniciar servidor automaticamente ao abrir: {status}")
+        self.adicionar_log(f"⚙️ Iniciar com o Windows: {status}")
+
+        if self.auto_iniciar:
+            if registrar_auto_inicio_windows():
+                self.adicionar_log("✅ Registrado para abrir com o Windows")
+                self.adicionar_log(f"📦 Cópia estável salva em: {INSTALL_EXE_PATH}")
+                self.adicionar_log("   (o arquivo baixado originalmente já pode ser apagado)")
+            elif getattr(sys, 'frozen', False):
+                self.adicionar_log("⚠️ Não foi possível registrar no Windows (verifique permissões)")
+        else:
+            remover_auto_inicio_windows()
+
         self.salvar_config()
 
     def carregar_config(self):
@@ -321,6 +409,48 @@ class ServidorImpressora:
                 json.dump(config, f, indent=2, ensure_ascii=False)
         except OSError as e:
             self.adicionar_log(f"⚠️ Erro ao salvar configuração: {str(e)}")
+
+    def configurar_bandeja(self):
+        """Cria o ícone na bandeja do sistema (thread própria, como o pystray exige).
+        Clique/duplo-clique reabre a janela; botão direito dá acesso a Abrir/Sair."""
+        menu = pystray.Menu(
+            pystray.MenuItem("Abrir", self._tray_abrir, default=True),
+            pystray.MenuItem("Sair", self._tray_sair),
+        )
+        self.tray_icon = pystray.Icon(
+            "servidor-impressora", criar_imagem_icone_bandeja(), "Servidor de Impressão", menu
+        )
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def _tray_abrir(self, icon=None, item=None):
+        # Callback do pystray roda em thread própria — Tkinter só pode ser mexido na
+        # thread principal, daí o marshalling via root.after.
+        self.root.after(0, self._abrir_janela)
+
+    def _abrir_janela(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def esconder_para_bandeja(self):
+        """Esconde a janela (fica só o ícone na bandeja) — não encerra o processo/servidor."""
+        self.root.withdraw()
+
+    def _tray_sair(self, icon=None, item=None):
+        self.root.after(0, self._sair_de_vez)
+
+    def _sair_de_vez(self):
+        """Encerra de verdade: para o servidor, remove o ícone da bandeja e fecha o processo."""
+        try:
+            self.parar_servidor()
+        except Exception:
+            pass
+        if self.tray_icon is not None:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
+        self.root.destroy()
 
     def processar_comando_zpl(self, dados):
         """Processa comando ZPL recebido do frontend"""

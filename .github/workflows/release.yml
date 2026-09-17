@@ -33,20 +33,25 @@ jobs:
 
       - name: Verify artifact
         run: |
-          if (-not (Test-Path "dist\servidor-impressora.exe")) {
+          if (-not (Test-Path "dist\servidor-impressora\servidor-impressora.exe")) {
             Write-Error "Build failed: servidor-impressora.exe not found"
             exit 1
           }
+
+      # onedir (pasta com .exe + _internal ao lado) em vez de onefile: evita o padrão
+      # de autoextração que antivírus costuma marcar como comportamento de dropper.
+      - name: Zip build output
+        run: Compress-Archive -Path dist\servidor-impressora\* -DestinationPath dist\servidor-impressora.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: servidor-impressora
-          path: dist/servidor-impressora.exe
+          path: dist/servidor-impressora.zip
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/servidor-impressora.exe
+          files: dist/servidor-impressora.zip
           generate_release_notes: true
