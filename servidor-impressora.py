@@ -11,6 +11,7 @@ import os
 import sys
 import winreg
 import base64
+import urllib.request
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -18,12 +19,19 @@ from werkzeug.serving import make_server
 import webbrowser
 import win32print
 import win32con
+import win32gui
 import pyperclip
 import pystray
 from PIL import Image, ImageDraw
 
 CONFIG_DIR = os.path.join(os.getenv('APPDATA', os.path.expanduser('~')), 'ServidorImpressora')
 CONFIG_PATH = os.path.join(CONFIG_DIR, 'config.json')
+
+# Versão atual — manter em sincronia com a tag do git a cada release (o workflow
+# não injeta isso automaticamente; é ajuste manual antes de taguear).
+APP_VERSION = "1.4.0"
+GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/fabianosafe/servidor-impressora/releases/latest"
+GITHUB_RELEASES_PAGE = "https://github.com/fabianosafe/servidor-impressora/releases/latest"
 
 # Sentinela exibida nos combobox de impressora — deixa a seleção em branco de propósito
 # (ex.: usuário selecionou a impressora errada e quer voltar a "nenhuma" em vez de outra
@@ -70,6 +78,34 @@ def remover_auto_inicio_windows():
         return True
     except OSError:
         return False
+
+
+def _versao_para_tupla(versao):
+    """Converte "1.4.0" (ou "v1.4.0") em (1, 4, 0) pra comparar numericamente
+    (comparação de string falharia, ex.: "1.9.0" > "1.10.0" como texto)."""
+    partes = versao.strip().lstrip('vV').split('.')
+    return tuple(int(p) for p in partes if p.isdigit())
+
+
+def verificar_atualizacao_disponivel(timeout=5):
+    """Consulta a Release mais recente no GitHub e compara com APP_VERSION.
+    Retorna (True, "1.4.1") se houver versão mais nova, (False, None) em
+    qualquer outro caso — inclusive falha de rede (sem internet, API fora do
+    ar, timeout): silencioso de propósito, não deve atrapalhar quem só quer
+    usar o app offline."""
+    try:
+        req = urllib.request.Request(
+            GITHUB_LATEST_RELEASE_API,
+            headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'servidor-impressora'},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        tag = data.get('tag_name', '')
+        if tag and _versao_para_tupla(tag) > _versao_para_tupla(APP_VERSION):
+            return True, tag.lstrip('vV')
+        return False, None
+    except Exception:
+        return False, None
 
 
 def criar_imagem_icone_bandeja():
@@ -128,12 +164,43 @@ class ServidorImpressora:
         except Exception as e:
             self.adicionar_log(f"⚠️ Bandeja do sistema indisponível: {str(e)}")
 
+        try:
+            self.instalar_hook_encerramento_windows()
+        except Exception as e:
+            self.adicionar_log(f"⚠️ Hook de encerramento indisponível: {str(e)}")
+
         if self.config_ja_existia:
             self.adicionar_log("📁 Configuração carregada de execução anterior")
 
         if self.auto_iniciar:
             self.iniciar_servidor()
             self.esconder_para_bandeja()
+
+        # Checagem de atualização em thread própria — não pode travar a abertura do
+        # app esperando rede (usuário pode estar offline, ou a checagem pode demorar).
+        threading.Thread(target=self._checar_atualizacao_em_background, daemon=True).start()
+
+    def _checar_atualizacao_em_background(self):
+        disponivel, versao_nova = verificar_atualizacao_disponivel()
+        if disponivel:
+            self.root.after(0, lambda: self._mostrar_atualizacao_disponivel(versao_nova))
+
+    def _mostrar_atualizacao_disponivel(self, versao_nova):
+        self.adicionar_log(f"Nova versão disponível: v{versao_nova} (atual: v{APP_VERSION})")
+        self.update_button.config(text=f"Nova versão disponível: v{versao_nova} — clique para baixar")
+        self.update_button.grid()
+
+        # Notificação nativa do Windows (mesma família de aviso que o antivírus usa) —
+        # essencial porque o app normalmente abre minimizado na bandeja (auto-início);
+        # sem isso, o aviso só dentro da janela nunca seria visto.
+        if self.tray_icon is not None:
+            try:
+                self.tray_icon.notify(
+                    f"Versão v{versao_nova} disponível. Clique no ícone da bandeja para abrir e baixar.",
+                    "Servidor de Impressão — Atualização disponível",
+                )
+            except Exception as e:
+                self.adicionar_log(f"⚠️ Não foi possível mostrar notificação: {str(e)}")
 
     def criar_interface(self):
         # Frame principal
@@ -172,10 +239,23 @@ class ServidorImpressora:
                  font=("Arial", 9, "italic")).grid(row=1, column=1, sticky=tk.W, pady=2, padx=(10, 0))
         
         # Botão abrir no navegador na mesma linha do endereço
-        self.browser_button = ttk.Button(server_frame, text="Testar resposta no Navegador", 
+        self.browser_button = ttk.Button(server_frame, text="Testar resposta no Navegador",
                                         command=self.abrir_navegador, state="disabled")
         self.browser_button.grid(row=1, column=2, pady=2, padx=(20, 0), sticky=tk.E)
-        
+
+        # Aviso de atualização disponível — escondido por padrão, só aparece se
+        # verificar_atualizacao_disponivel() achar versão mais nova (checagem em
+        # background ao abrir o app; falha de rede é silenciosa, não bloqueia nada).
+        # tk.Button (não ttk) com cor de alerta de propósito — precisa destacar bem
+        # do resto da tela, que é tudo cinza/ttk padrão.
+        self.update_button = tk.Button(
+            server_frame, text="", command=self.abrir_pagina_releases,
+            bg="#f59e0b", fg="white", activebackground="#d97706", activeforeground="white",
+            font=("Arial", 10, "bold"), relief=tk.RAISED, cursor="hand2", pady=6,
+        )
+        self.update_button.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(8, 0))
+        self.update_button.grid_remove()
+
         # ===== LOG DE REQUISIÇÕES =====
         log_frame = ttk.LabelFrame(main_frame, text="Log de Requisições", padding="10")
         log_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -224,33 +304,38 @@ class ServidorImpressora:
         host_entry = ttk.Entry(config_frame, textvariable=self.host_var, width=15)
         host_entry.grid(row=1, column=1, sticky=tk.W, pady=2, padx=(10, 0))
         
+        # Atualizar lista de impressoras — própria linha, mesmo padrão label/controle
+        # das demais linhas (não mais espremido do lado do combo de Etiquetas). Dá
+        # feedback visual (desabilita + "Atualizando...") enquanto escaneia, ver
+        # on_atualizar_impressoras_click.
+        ttk.Label(config_frame, text="Lista de Impressoras:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.atualizar_button = ttk.Button(config_frame, text="Atualizar", width=14,
+                  command=self.on_atualizar_impressoras_click)
+        self.atualizar_button.grid(row=2, column=1, sticky=tk.W, pady=2, padx=(10, 0))
+
         # Impressora
-        ttk.Label(config_frame, text="Impressora Etiquetas:").grid(row=2, column=0, sticky=tk.W, pady=2)
-        
+        ttk.Label(config_frame, text="Impressora Etiquetas:").grid(row=3, column=0, sticky=tk.W, pady=2)
+
         # Frame para impressora
         printer_frame = ttk.Frame(config_frame)
-        printer_frame.grid(row=2, column=1, sticky=(tk.W, tk.E), pady=2, padx=(10, 0))
-        
+        printer_frame.grid(row=3, column=1, sticky=(tk.W, tk.E), pady=2, padx=(10, 0))
+
         # Combobox para selecionar impressora
-        # Se veio de config salva com seleção em branco de propósito, mostra a sentinela
-        # "(Nenhuma)" em vez de string vazia — senão atualizar_impressoras() forçaria
-        # de volta pra primeira impressora da lista.
-        valor_inicial_etiqueta = NENHUMA_IMPRESSORA if (self.config_ja_existia and not self.impressora_selecionada) else self.impressora_selecionada
+        # Sem impressora salva (primeira execução OU usuário deixou em branco de
+        # propósito), mostra a sentinela "(Nenhuma)" em vez de string vazia — senão
+        # atualizar_impressoras() forçaria a primeira impressora da lista sozinho.
+        valor_inicial_etiqueta = self.impressora_selecionada or NENHUMA_IMPRESSORA
         self.printer_var = tk.StringVar(value=valor_inicial_etiqueta)
         self.printer_combo = ttk.Combobox(printer_frame, textvariable=self.printer_var,
                                          state="readonly", width=30)
         self.printer_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.printer_combo.bind('<<ComboboxSelected>>', self.on_printer_change)
-        
-        # Botão para atualizar lista de impressoras
-        ttk.Button(printer_frame, text="🔄", width=3,
-                  command=self.atualizar_impressoras).pack(side=tk.LEFT, padx=(5, 0))
 
         # Impressora de CUPOM (recibo/ticket)
-        ttk.Label(config_frame, text="Impressora de Cupom:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Label(config_frame, text="Impressora de Cupom:").grid(row=4, column=0, sticky=tk.W, pady=2)
         cupom_frame = ttk.Frame(config_frame)
-        cupom_frame.grid(row=3, column=1, sticky=(tk.W, tk.E), pady=2, padx=(10, 0))
-        valor_inicial_cupom = NENHUMA_IMPRESSORA if (self.config_ja_existia and not self.impressora_cupom) else self.impressora_cupom
+        cupom_frame.grid(row=4, column=1, sticky=(tk.W, tk.E), pady=2, padx=(10, 0))
+        valor_inicial_cupom = self.impressora_cupom or NENHUMA_IMPRESSORA
         self.printer_cupom_var = tk.StringVar(value=valor_inicial_cupom)
         self.printer_cupom_combo = ttk.Combobox(cupom_frame, textvariable=self.printer_cupom_var,
                                                  state="readonly", width=30)
@@ -258,26 +343,36 @@ class ServidorImpressora:
         self.printer_cupom_combo.bind('<<ComboboxSelected>>', self.on_printer_cupom_change)
 
         # Switch para impressão automática
-        ttk.Label(config_frame, text="Impressão Automática:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        ttk.Label(config_frame, text="Impressão Automática:").grid(row=5, column=0, sticky=tk.W, pady=2)
         self.impressao_auto_var = tk.BooleanVar(value=self.impressao_automatica)
         self.impressao_auto_check = ttk.Checkbutton(config_frame,
                                                    text="Imprimir automaticamente ao receber etiqueta",
                                                    variable=self.impressao_auto_var,
                                                    command=self.on_impressao_auto_change)
-        self.impressao_auto_check.grid(row=4, column=1, sticky=tk.W, pady=2, padx=(10, 0))
+        self.impressao_auto_check.grid(row=5, column=1, sticky=tk.W, pady=2, padx=(10, 0))
 
         # Switch único: abre com o Windows, minimizado na bandeja, servidor já ligado
-        ttk.Label(config_frame, text="Iniciar com o Windows:").grid(row=5, column=0, sticky=tk.W, pady=2)
+        ttk.Label(config_frame, text="Iniciar com o Windows:").grid(row=6, column=0, sticky=tk.W, pady=2)
         self.auto_iniciar_var = tk.BooleanVar(value=self.auto_iniciar)
         self.auto_iniciar_check = ttk.Checkbutton(config_frame,
                                                    text="Abrir automaticamente com o Windows, minimizado na bandeja",
                                                    variable=self.auto_iniciar_var,
                                                    command=self.on_auto_iniciar_change)
-        self.auto_iniciar_check.grid(row=5, column=1, sticky=tk.W, pady=2, padx=(10, 0))
+        self.auto_iniciar_check.grid(row=6, column=1, sticky=tk.W, pady=2, padx=(10, 0))
 
         # Carregar impressoras na inicialização
         self.atualizar_impressoras()
     
+    def on_atualizar_impressoras_click(self):
+        """Callback do botão de atualizar — desabilita e mostra "Atualizando..." durante
+        o escaneio, pra dar feedback visual de que algo está acontecendo."""
+        self.atualizar_button.config(state="disabled", text="Atualizando...")
+        self.root.update_idletasks()
+        try:
+            self.atualizar_impressoras()
+        finally:
+            self.atualizar_button.config(state="normal", text="Atualizar")
+
     def atualizar_impressoras(self):
         """Atualiza a lista de impressoras disponíveis"""
         try:
@@ -438,6 +533,49 @@ class ServidorImpressora:
             except Exception:
                 pass
         self.root.destroy()
+
+    def instalar_hook_encerramento_windows(self):
+        """Faz o app responder de verdade a um pedido de encerramento do Windows
+        (logoff/reinício, ou o Restart Manager do instalador durante uma atualização
+        com CloseApplications=yes). Sem isso, como o app ignora o "X" de propósito
+        (só minimiza pra bandeja), ele nunca fecha sozinho quando o Windows pede —
+        e a atualização automática fica travada esperando fechamento manual.
+
+        Subclassing de baixo nível via pywin32 (win32gui.SetWindowLong com
+        GWL_WNDPROC) — o Tkinter não expõe WM_QUERYENDSESSION/WM_ENDSESSION como
+        protocolo de mais alto nível (só WM_DELETE_WINDOW, que é o "X")."""
+        hwnd = self.root.winfo_id()
+        self._wndproc_original = win32gui.SetWindowLong(hwnd, win32con.GWL_WNDPROC, self._wndproc_encerramento)
+
+    def _wndproc_encerramento(self, hwnd, msg, wparam, lparam):
+        """Intercepta a mensagem de encerramento de sessão do Windows. Roda na mesma
+        thread do Tkinter (janelas só recebem mensagem na thread dona), então é
+        seguro chamar métodos do app direto daqui, sem root.after()."""
+        try:
+            if msg == win32con.WM_QUERYENDSESSION:
+                # Sempre autoriza — nunca queremos bloquear um encerramento do Windows.
+                return True
+            if msg == win32con.WM_ENDSESSION and wparam:
+                # wparam truthy = o encerramento está de fato acontecendo (não foi
+                # cancelado por outro app). Aqui o Windows já está finalizando a
+                # sessão/processo — saída abrupta (os._exit) é esperada e garante
+                # liberar os arquivos .exe/.dll na hora, pro instalador conseguir
+                # sobrescrever. Não há estado não salvo: config.json já é gravado
+                # a cada mudança, não em lote.
+                #
+                # NÃO chama tray_icon.stop() aqui — na prática, travava o processo
+                # (chamado de thread diferente da que roda o loop da bandeja).
+                # Como o processo inteiro vai morrer no os._exit logo em seguida, o
+                # ícone da bandeja e a thread da bandeja somem sozinhos, sem precisar
+                # de parada graciosa.
+                try:
+                    self.parar_servidor()
+                except Exception:
+                    pass
+                os._exit(0)
+        except Exception:
+            pass
+        return win32gui.CallWindowProc(self._wndproc_original, hwnd, msg, wparam, lparam)
 
     def processar_comando_zpl(self, dados):
         """Processa comando ZPL recebido do frontend"""
@@ -728,7 +866,15 @@ class ServidorImpressora:
             webbrowser.open(url)
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao abrir navegador:\n{str(e)}")
-    
+
+    def abrir_pagina_releases(self):
+        """Abre a página de Releases do GitHub — usado pelo aviso de atualização."""
+        try:
+            webbrowser.open(GITHUB_RELEASES_PAGE)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao abrir navegador:\n{str(e)}")
+
+
     def abrir_labelary(self):
         """Abre o site do Labelary Viewer no navegador"""
         try:

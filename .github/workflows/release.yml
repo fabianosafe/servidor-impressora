@@ -38,20 +38,44 @@ jobs:
             exit 1
           }
 
-      # onedir (pasta com .exe + _internal ao lado) em vez de onefile: evita o padrão
-      # de autoextração que antivírus costuma marcar como comportamento de dropper.
-      - name: Zip build output
-        run: Compress-Archive -Path dist\servidor-impressora\* -DestinationPath dist\servidor-impressora.zip
+      - name: Determine version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+
+      # onedir (pasta com .exe + _internal ao lado, sem autoextração pra pasta temporária
+      # a cada execução — padrão que heurística de antivírus costuma marcar como dropper)
+      # + instalador Inno Setup por cima: cria a pasta fixa (C:\Servidor de Impressão),
+      # copia os arquivos, atalho no Menu Iniciar, desinstalador, e detecta instalação
+      # existente pra tratar como ATUALIZAÇÃO (AppId fixo em installer.iss).
+      - name: Compile installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc "/DMyAppVersion=$('${{ steps.version.outputs.version }}')" installer.iss
+
+      - name: Verify installer
+        run: |
+          if (-not (Test-Path "installer_output\ServidorImpressoraSetup.exe")) {
+            Write-Error "Instalador nao foi gerado"
+            exit 1
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: servidor-impressora
-          path: dist/servidor-impressora.zip
+          path: installer_output/ServidorImpressoraSetup.exe
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/servidor-impressora.zip
+          files: installer_output/ServidorImpressoraSetup.exe
           generate_release_notes: true

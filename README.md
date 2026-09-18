@@ -4,23 +4,24 @@ Aplicação desktop Windows que recebe comandos de impressão via HTTP e envia R
 
 ## Download
 
-Versão mais recente (Windows, .zip):
+Versão mais recente (instalador Windows):
 
-**[Baixar servidor-impressora.zip](https://github.com/fabianosafe/servidor-impressora/releases/latest/download/servidor-impressora.zip)**
+**[Baixar ServidorImpressoraSetup.exe](https://github.com/fabianosafe/servidor-impressora/releases/latest/download/ServidorImpressoraSetup.exe)**
 
-Sem instalação. Extrair o .zip e executar o `servidor-impressora.exe` de dentro da pasta extraída (não mover o `.exe` sozinho — ele depende dos arquivos da pasta `_internal` ao lado).
+Executar e seguir o assistente (Avançar → Avançar → Concluir). Instala em `C:\Servidor de Impressão` por padrão, cria atalho no Menu Iniciar e desinstalador. Pede elevação (UAC) — normal, é só pra escrever fora da pasta do usuário.
 
-**Extrair direto num local fixo fora de Downloads/Desktop** — ex.: `C:\Servidor de Impressão`. Ao extrair pelo Windows ("Extrair Tudo"), trocar o campo de destino direto pra essa pasta, sem passar por Downloads antes. Dois motivos:
-1. Downloads é uma das pastas mais vigiadas por heurística de antivírus ("muitos executáveis novos aparecendo de uma vez") — extrair ali (mesmo que só de passagem, movendo depois) já é o suficiente pra alguns antivírus barrarem arquivos da pasta `_internal` silenciosamente.
-2. O auto-início com o Windows (opção "Iniciar com o Windows") registra o caminho de onde o `.exe` está rodando **no momento em que a opção é marcada** — sem local fixo, mover o app depois quebra o auto-início silenciosamente.
+**Atualizar** é rodar o instalador de uma versão nova por cima — o `AppId` é fixo (`installer.iss`), então o Windows reconhece como atualização (mesma pasta, mesmo atalho, sem duplicar nada), não instalação nova. Se o app estiver rodando (comum, já que ele fica minimizado na bandeja com "Iniciar com o Windows"), o próprio instalador encerra o processo antes de sobrescrever os arquivos (`[Code]` em `installer.iss` — decisão deliberada de matar o processo direto em vez de depender do Restart Manager do Windows pedir educadamente: testado e descartado, o Restart Manager só espera ~37ms antes de desistir, tempo curto demais pro loop de eventos do Tcl/Tk responder a tempo).
 
-Distribuído como pasta (onedir), não `.exe` único: builds onefile se autoextraem pra uma pasta temporária a cada execução, um padrão que heurística de antivírus costuma marcar como comportamento de dropper de malware — onedir evita isso. Pelo mesmo motivo, a versão atual **não** se autocopia pra outro lugar ao marcar "Iniciar com o Windows" (versões anteriores faziam isso e eram bloqueadas pelo Kaspersky por comportamento de persistência).
+Instalador em vez de `.exe`/`.zip` solto: builds "onefile" se autoextraem pra uma pasta temporária a cada execução (padrão que antivírus costuma marcar como dropper de malware) — o build já é onedir (pasta com `.exe` + `_internal` ao lado, sem autoextração) e o instalador cria a pasta fixa sozinho, evitando também o antivírus barrar arquivos ao extrair manualmente numa pasta "de passagem" tipo Downloads.
 
 ## Como funciona
 
 - Servidor Flask local escutando em `localhost:5000` por padrão (host configurável na interface).
 - Interface Tkinter para selecionar impressora, ativar/desativar servidor, ver log.
-- **Duas impressoras por papel**: "Impressora Etiquetas" (etiqueta ZPL) e "Impressora de Cupom" (recibo/ticket ESC/POS). O servidor é um **relay RAW agnóstico ao conteúdo** — a largura/layout vêm prontos do envio (Fagus); ele só roteia por papel.
+- **Duas impressoras por papel**: "Impressora Etiquetas" (etiqueta ZPL) e "Impressora de Cupom" (recibo/ticket ESC/POS). O servidor é um **relay RAW agnóstico ao conteúdo** — a largura/layout vêm prontos do envio (Fagus); ele só roteia por papel. Combobox tem opção "(Nenhuma)" pra deixar em branco de propósito (padrão numa instalação nova, sem forçar escolha).
+- **Ícone na bandeja do sistema** (pystray): fechar a janela (X) minimiza em vez de encerrar; menu da bandeja tem Abrir/Sair.
+- **"Iniciar com o Windows"** (switch único): registra `HKCU\...\Run` apontando pro caminho onde o `.exe` está rodando, inicia minimizado na bandeja, liga o servidor — tudo junto.
+- **Checagem de atualização** ao abrir (thread própria, não bloqueia): compara `APP_VERSION` com a Release mais recente no GitHub; se houver mais nova, mostra botão destacado na janela + notificação nativa do Windows (essencial já que o app normalmente abre minimizado).
 - Endpoints:
   - `GET /` — health check
   - `GET /test` — teste conexão
@@ -33,8 +34,10 @@ Distribuído como pasta (onedir), não `.exe` único: builds onefile se autoextr
 - Python 3.11
 - Flask + flask-cors (HTTP)
 - Tkinter (UI)
-- pywin32 (`win32print`) — envio raw pra spooler do Windows
+- pywin32 (`win32print`, `win32gui`) — envio raw pra spooler do Windows, hook de encerramento e registro no autorun
+- pystray + Pillow — ícone na bandeja do sistema
 - pyperclip (clipboard)
+- Inno Setup 6 (`installer.iss`) — instalador Windows, não é dependência Python (baixar separadamente pra build local)
 
 ## Build local (desenvolvimento)
 
@@ -65,25 +68,28 @@ O shim **não** entra no PyInstaller / release Windows.
 
 ## Build do executável
 
-Local:
+Local (precisa do [Inno Setup 6](https://jrsoftware.org/isinfo.php) instalado, `winget install JRSoftware.InnoSetup`):
 
 ```bash
 pip install -r requirements.txt pyinstaller
 pyinstaller servidor-impressora.spec
 # saída: dist/servidor-impressora/servidor-impressora.exe (+ dist/servidor-impressora/_internal/)
+
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=1.4.0 installer.iss
+# saída: installer_output/ServidorImpressoraSetup.exe
 ```
 
-Automático: workflow `.github/workflows/release.yml` roda em `windows-latest`, zipa `dist/servidor-impressora/` e publica `servidor-impressora.zip` como GitHub Release.
+`MyAppVersion` também vira o número mostrado em "Programas e Recursos" do Windows — manter em sincronia com a constante `APP_VERSION` no topo de `servidor-impressora.py` (usada na checagem de atualização) e com a tag do git.
+
+Automático: workflow `.github/workflows/release.yml` roda em `windows-latest`, compila o `.exe` + o instalador (`/DMyAppVersion=<versão da tag>`) e publica `ServidorImpressoraSetup.exe` como GitHub Release.
 
 ## Publicar nova versão
 
-```bash
-git tag v1.2.3
-git push origin v1.2.3
-```
+1. Atualizar `APP_VERSION` em `servidor-impressora.py` pra bater com a tag.
+2. `git tag v1.4.1 && git push origin v1.4.1`
 
-Action builda e cria a Release. URL `latest/download/servidor-impressora.zip` sempre aponta pra última.
+Action builda e cria a Release. URL `latest/download/ServidorImpressoraSetup.exe` sempre aponta pra última.
 
 ## Integração com FAGUS
 
-Fagus envia ZPL pra `/receive` (etiquetas) e ESC/POS em base64 pra `/imprimir-cupom` (cupom do PDV), sempre em `http://<ip-local>:5000`. Endereço configurável no modal de impressão de etiqueta e no badge de impressora do PDV. Botões de download apontam direto pra Release `latest` (`servidor-impressora.zip`).
+Fagus envia ZPL pra `/receive` (etiquetas) e ESC/POS em base64 pra `/imprimir-cupom` (cupom do PDV), sempre em `http://<ip-local>:5000`. Endereço configurável no modal de impressão de etiqueta e no badge de impressora do PDV. Botões de download apontam direto pra Release `latest` (`ServidorImpressoraSetup.exe`).
